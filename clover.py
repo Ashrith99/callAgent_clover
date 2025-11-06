@@ -41,11 +41,13 @@ class CloverClient:
         )
         
         if not self.merchant_id:
+            log.error("🔍 DEBUG: CLOVER_MERCHANT_ID not found in environment")
             raise ValueError("CLOVER_MERCHANT_ID environment variable not set")
         if not self.access_token:
+            log.error("🔍 DEBUG: CLOVER_ACCESS_TOKEN not found in environment")
             raise ValueError("CLOVER_ACCESS_TOKEN environment variable not set")
         
-        log.info(f"Clover client initialized for merchant: {self.merchant_id}")
+        log.info(f"🔍 DEBUG: Clover client initialized - merchant: {self.merchant_id}, base_url: {self.base_url}")
     
     def _get_headers(self) -> Dict[str, str]:
         """Get common headers for API requests."""
@@ -74,21 +76,27 @@ class CloverClient:
             Clover order ID if successful, None if failed
         """
         try:
+            # 🔍 DEBUG: Entry point
+            log.info(f"🔍 DEBUG: Clover create_order - phone={phone}, items={items}")
+            
             # Step 1: Create the order
+            log.info(f"🔍 DEBUG: Creating base order...")
             order_id = await self._create_order_base(phone, name)
             if not order_id:
                 log.error("Failed to create base order in Clover")
                 return None
             
-            log.info(f"Clover order created: {order_id}")
+            log.info(f"🔍 DEBUG: Base order created: {order_id}")
             
             # Step 2: Add line items to the order
+            log.info(f"🔍 DEBUG: Adding {len(items)} items to order...")
             success = await self._add_line_items(order_id, items)
             if not success:
                 log.error(f"Failed to add items to Clover order {order_id}")
                 return None
             
-            log.info(f"Successfully added {len(items)} items to Clover order {order_id}")
+            log.info(f"🔍 DEBUG: Items added successfully")
+            log.info(f"✅ Clover order complete: {order_id}")
             
             # Step 3: (Optional) Fire order to kitchen - uncomment if needed
             # await self._fire_order(order_id)
@@ -97,6 +105,8 @@ class CloverClient:
             
         except Exception as e:
             log.error(f"Clover order creation failed: {e}")
+            import traceback
+            log.error(f"🔍 DEBUG: Clover traceback: {traceback.format_exc()}")
             return None
     
     async def _create_order_base(

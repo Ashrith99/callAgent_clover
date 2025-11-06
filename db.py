@@ -16,12 +16,15 @@ import logging
 from datetime import datetime
 
 # Import Clover integration
+CLOVER_ENABLED = False
+_clover_import_error = None
+
 try:
     from clover import get_clover_client
     CLOVER_ENABLED = True
 except Exception as e:
-    CLOVER_ENABLED = False
-    logging.getLogger("realtime_restaurant_agent").warning(f"Clover integration disabled: {e}")
+    _clover_import_error = str(e)
+    # Don't log here - will log later when actually used
 
 # ---------- Load .env file and initialize MongoDB URI ----------
 
@@ -65,17 +68,27 @@ class DatabaseDriver:
         # Initialize the collection reference to use in other methods
         self.collection = orders_collection
         self.log = logging.getLogger("realtime_restaurant_agent")
+        self._indexes_created = False
         
-        # Create indexes for faster queries (50-100ms → 10-20ms)
-        try:
-            self.collection.create_index("phone", background=True)
-            self.collection.create_index("created_at", background=True)
-            self.log.info("Database indexes created successfully")
-        except Exception as e:
-            self.log.warning(f"Index creation warning: {e}")
+        # Don't create indexes here - do it lazily on first use to avoid blocking
+    
+    def _ensure_indexes(self):
+        """Create indexes lazily (only once, non-blocking)"""
+        if not self._indexes_created:
+            try:
+                # Create indexes in background (non-blocking)
+                self.collection.create_index("phone", background=True)
+                self.collection.create_index("created_at", background=True)
+                self._indexes_created = True
+            except Exception:
+                # Silently ignore - indexes are optional optimization
+                pass
 
     # Create a new order in the MongoDB collection
     def create_order(self, phone: str, items: List[Dict[str, Any]], name: str = None, address: str = None, caller_phone: str = None) -> Optional[dict]:
+        # Ensure indexes exist (lazy, non-blocking)
+        self._ensure_indexes()
+        
         self.log.info(f"Database: Received phone parameter: {phone}")
         self.log.info(f"Database: Phone parameter type: {type(phone)}")
         self.log.info(f"Database: Phone parameter is None: {phone is None}")
@@ -144,6 +157,9 @@ class DatabaseDriver:
         Returns:
             Order document if successful, None otherwise
         """
+        # 🔍 DEBUG: Entry point
+        self.log.info(f"🔍 DEBUG: create_order_with_clover called - phone={phone}, items_count={len(items)}")
+        
         # Step 1: Save to MongoDB (always do this first)
         order = self.create_order(phone, items, name, address, caller_phone)
         
@@ -151,16 +167,30 @@ class DatabaseDriver:
             self.log.error("Failed to save order to MongoDB")
             return None
         
+        # 🔍 DEBUG: MongoDB save status
+        self.log.info(f"🔍 DEBUG: MongoDB save OK, order_id={order.get('_id')}")
+        
         # Step 2: Sync to Clover POS (don't fail if this doesn't work)
+        # 🔍 DEBUG: Check if Clover is enabled
+        if CLOVER_ENABLED:
+            self.log.info(f"🔍 DEBUG: ✅ Clover integration ENABLED")
+        else:
+            self.log.warning(f"🔍 DEBUG: ⚠️ Clover integration DISABLED - {_clover_import_error or 'check .env file'}")
+        
         if CLOVER_ENABLED:
             try:
+                self.log.info(f"🔍 DEBUG: Getting Clover client...")
                 clover_client = get_clover_client()
+                
+                self.log.info(f"🔍 DEBUG: Calling clover_client.create_order...")
                 clover_order_id = await clover_client.create_order(
                     phone=phone,
                     items=items,
                     name=name,
                     address=address
                 )
+                
+                self.log.info(f"🔍 DEBUG: Clover API returned: {clover_order_id}")
                 
                 if clover_order_id:
                     self.log.info(f"✅ Order synced to Clover POS: {clover_order_id}")
@@ -178,8 +208,10 @@ class DatabaseDriver:
                     self.log.warning("⚠️ Failed to sync order to Clover (order saved in MongoDB)")
             except Exception as e:
                 self.log.error(f"⚠️ Clover sync error: {e} (order saved in MongoDB)")
+                import traceback
+                self.log.error(f"🔍 DEBUG: Traceback: {traceback.format_exc()}")
         else:
-            self.log.info("Clover integration disabled - order saved to MongoDB only")
+            self.log.warning("🔍 DEBUG: Clover integration DISABLED - check .env file")
         
         return order
 

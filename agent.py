@@ -54,8 +54,15 @@ if PRODUCTION:
 else:
     log.setLevel(logging.INFO)
 
-# --- Database
-db_driver = DatabaseDriver()
+# --- Database (lazy initialization to avoid blocking)
+db_driver = None
+
+def get_db_driver():
+    """Get database driver with lazy initialization"""
+    global db_driver
+    if db_driver is None:
+        db_driver = DatabaseDriver()
+    return db_driver
 
 # ------------------------------------------------------------
 # 🧩 FUNCTION TOOLS
@@ -101,17 +108,29 @@ def create_order_tool_factory(agent_instance):
             # Make database call non-blocking - don't wait for it
             async def save_order_async():
                 try:
+                    # 🔍 DEBUG: Agent calling save
+                    log.info(f"🔍 DEBUG: Agent save_order_async starting...")
+                    
                     # Use the new Clover-integrated method (fully async)
                     items_payload = [item.model_dump() for item in items]
-                    result = await db_driver.create_order_with_clover(
+                    log.info(f"🔍 DEBUG: Items payload: {items_payload}")
+                    
+                    # Get database driver (lazy initialization)
+                    driver = get_db_driver()
+                    result = await driver.create_order_with_clover(
                         final_phone, items_payload, name, address
                     )
+                    
+                    log.info(f"🔍 DEBUG: save result: {result is not None}")
+                    
                     if result:
                         agent_instance.order_placed = True
                         log.info(f"✅ Order saved (MongoDB + Clover POS)")
                         asyncio.create_task(agent_instance._terminate_call_after_delay())
                 except Exception as e:
                     log.error(f"Async order save failed: {e}")
+                    import traceback
+                    log.error(f"🔍 DEBUG: Agent traceback: {traceback.format_exc()}")
             
             # Don't wait for database - respond immediately
             asyncio.create_task(save_order_async())
@@ -394,7 +413,7 @@ async def entrypoint(ctx: JobContext):
     vad = silero.VAD.load(
         min_speech_duration=0.2,  # Faster detection (default 0.5s)
         min_silence_duration=0.35,  # Quicker turn-taking (default 0.5s)
-        padding_duration=0.15,  # Less padding (default 0.3s)
+        prefix_padding_duration=0.15,  # Less padding (default 0.3s) - FIXED PARAMETER NAME
     )
 
     session = AgentSession(
@@ -402,16 +421,11 @@ async def entrypoint(ctx: JobContext):
             api_key=deepgram_api_key,
             model="nova-2-general",  # fast, accurate STT
             language="en",  # Explicit language for faster processing
-            interim_results=True,  # Start processing immediately
-            endpointing=200,  # Faster turn-taking (default 300ms)
-            smart_format=True,
-            punctuate=True,
         ),
         llm=OpenAIModel(
             model="gpt-4o-mini",  # 50% faster, 88% cheaper - perfect for conversational tasks
             api_key=openai_api_key,
             temperature=0.3,  # Slightly higher for natural responses
-            stream=True,  # Enable streaming for 40% perceived latency improvement
         ),
         tts=openai.TTS(
             voice="alloy",  # OpenAI voice options: alloy, echo, fable, onyx, nova, shimmer
