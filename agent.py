@@ -17,8 +17,8 @@ from livekit.agents import (
     RoomInputOptions,
     function_tool,
 )
-from livekit.plugins import openai, deepgram, noise_cancellation, silero
-from livekit.plugins.openai import LLM as OpenAIModel
+from livekit.plugins import openai, noise_cancellation
+from livekit.plugins.openai import realtime
 
 # --- Local imports
 from db import DatabaseDriver
@@ -404,37 +404,35 @@ async def entrypoint(ctx: JobContext):
     if not openai_api_key:
         raise RuntimeError("Missing OPENAI_API_KEY in environment variables!")
 
-    # Configure Deepgram STT, OpenAI text LLM, and OpenAI TTS
-    deepgram_api_key = os.getenv("DEEPGRAM_API_KEY")
-    if not deepgram_api_key:
-        raise RuntimeError("Missing DEEPGRAM_API_KEY in environment variables!")
-
-    # Configure optimized VAD for faster turn-taking (35% latency reduction)
-    vad = silero.VAD.load(
-        min_speech_duration=0.2,  # Faster detection (default 0.5s)
-        min_silence_duration=0.35,  # Quicker turn-taking (default 0.5s)
-        prefix_padding_duration=0.15,  # Less padding (default 0.3s) - FIXED PARAMETER NAME
+    # 🚀 REALTIME MODEL: Ultra-low latency - STT + LLM + TTS all in one!
+    # No separate Deepgram, no separate TTS, no separate LLM
+    # Everything happens in real-time with OpenAI's Realtime API
+    realtime_model = realtime.RealtimeModel(
+        api_key=openai_api_key,
+        voice="alloy",  # Options: alloy, echo, shimmer, nova, fable, onyx
+        modalities=["audio", "text"],
+        # Turn detection configuration (passed as dict)
+        turn_detection={
+            "type": "server_vad",  # Server-side voice activity detection
+            "threshold": 0.5,  # Sensitivity threshold
+            "prefix_padding_ms": 300,  # Audio before speech
+            "silence_duration_ms": 500,  # Silence to detect end of turn
+        },
     )
 
-    session = AgentSession(
-        stt=deepgram.STT(
-            api_key=deepgram_api_key,
-            model="nova-2-general",  # fast, accurate STT
-            language="en",  # Explicit language for faster processing
-        ),
-        llm=OpenAIModel(
-            model="gpt-4o-mini",  # 50% faster, 88% cheaper - perfect for conversational tasks
-            api_key=openai_api_key,
-            temperature=0.3,  # Slightly higher for natural responses
-        ),
-        tts=openai.TTS(
-            voice="alloy",  # OpenAI voice options: alloy, echo, fable, onyx, nova, shimmer
-            api_key=openai_api_key,
-        ),
-        vad=vad,  # Custom VAD for optimized turn-taking
-    )
-
+    # Create Agent with RealtimeModel (no separate STT/TTS/LLM needed)
     agent = RestaurantAgent(job_context=ctx)
+    
+    # Override agent's LLM with RealtimeModel
+    agent._llm = realtime_model
+    
+    # Create AgentSession (RealtimeModel handles everything)
+    session = AgentSession(
+        stt=None,  # RealtimeModel handles STT
+        tts=None,  # RealtimeModel handles TTS
+        llm=realtime_model,  # RealtimeModel handles LLM
+    )
+    
     await ctx.connect()
 
     # Extract caller phone number (non-blocking - done in parallel with session start)
